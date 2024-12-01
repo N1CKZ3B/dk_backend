@@ -1,26 +1,22 @@
-const express = require('express');
 const WebSocket = require('ws');
-const cors = require('cors');
+const express = require('express');
 const path = require('path');
+const cors = require('cors');
 
-// Configuración inicial
 const app = express();
 const server = require('http').createServer(app);
 const wss = new WebSocket.Server({ server });
 
 // Middleware
-app.use(express.json()); // Para manejar JSON en las solicitudes
-app.use(cors({
-    origin: 'http://localhost:3000', // Cambiar a la URL del frontend en producción
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    credentials: true,
-}));
+app.use(cors({ origin: 'http://localhost:3000' })); // Cambiar al dominio del frontend en producción
+app.use(express.json()); // Para procesar datos en formato JSON
+app.use(express.static(path.join(__dirname, '../frontend'))); // Sirve el frontend estático
 
 // Estado del juego
 let gameState = {
-    players: {},
-    ballPosition: null,
-    obstacles: [...Array(10).keys()].map(row => row * 11 + 5), // Obstáculos de ejemplo
+    players: {},       // Información de los jugadores
+    ballPosition: null, // Posición de la pelota
+    obstacles: [...Array(10).keys()].map(row => row * 11 + 5), // Obstáculos en la columna 6
 };
 
 // Inicializa la posición de la pelota
@@ -40,15 +36,33 @@ function initializeBallPosition() {
 initializeBallPosition();
 
 // Rutas de API
-app.post('/api/data', (req, res) => {
-    console.log('Datos recibidos:', req.body);
-    res.json({ message: 'Datos procesados correctamente' });
+app.get('/api/game-state', (req, res) => {
+    // Devuelve el estado del juego al frontend
+    res.json(gameState);
+});
+
+app.post('/api/update-game', (req, res) => {
+    // Actualiza el estado del juego basado en datos del frontend
+    const { type, username, position, color } = req.body;
+
+    if (type === 'newPlayer' && username && typeof position === 'number' && color) {
+        gameState.players[username] = { position, color };
+        broadcastGameState();
+        res.json({ message: 'Jugador añadido', success: true });
+    } else if (type === 'move' && username && gameState.players[username]) {
+        gameState.players[username].position = position;
+        broadcastGameState();
+        res.json({ message: 'Jugador movido', success: true });
+    } else {
+        res.status(400).json({ message: 'Solicitud inválida', success: false });
+    }
 });
 
 // WebSocket
 wss.on('connection', (ws) => {
     console.log('Nuevo jugador conectado');
 
+    // Envía el estado inicial del juego al cliente
     ws.send(JSON.stringify({
         type: 'updateGameState',
         players: gameState.players,
@@ -57,17 +71,36 @@ wss.on('connection', (ws) => {
     }));
 
     ws.on('message', (message) => {
-        const data = JSON.parse(message);
-        console.log('Mensaje recibido:', data);
+        try {
+            const data = JSON.parse(message);
+            console.log('Mensaje recibido:', data);
 
-        if (data.type === 'newPlayer') {
-            gameState.players[data.username] = {
-                position: data.position,
-                color: data.color,
-            };
+            switch (data.type) {
+                case 'newPlayer':
+                    if (data.username && typeof data.position === 'number' && data.color) {
+                        gameState.players[data.username] = {
+                            position: data.position,
+                            color: data.color,
+                        };
+                        console.log(`Jugador añadido: ${data.username}`);
+                        broadcastGameState();
+                    }
+                    break;
+
+                case 'move':
+                    if (data.username && gameState.players[data.username]) {
+                        gameState.players[data.username].position = data.position;
+                        console.log(`Jugador movido: ${data.username}`);
+                        broadcastGameState();
+                    }
+                    break;
+
+                default:
+                    console.warn('Mensaje desconocido:', data);
+            }
+        } catch (error) {
+            console.error('Error procesando mensaje:', error);
         }
-
-        broadcastGameState();
     });
 
     ws.on('close', () => {
@@ -75,6 +108,7 @@ wss.on('connection', (ws) => {
     });
 });
 
+// Función para enviar el estado del juego a todos los clientes
 function broadcastGameState() {
     const message = {
         type: 'updateGameState',
@@ -90,11 +124,12 @@ function broadcastGameState() {
     });
 }
 
-// Configuración del puerto
+// Configuración del servidor
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
     console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });
+
 
 /* ACA SI FUNCIONA EL REALTIME 
 function broadcastGameState() {
